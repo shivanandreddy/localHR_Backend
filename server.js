@@ -29,7 +29,7 @@ app.use('/api/payroll', payrollRoutes);
 
 // Health Check Route
 app.get('/', (req, res) => {
-  res.send('ShiftSync HR Backend API is up and running...');
+  res.send('LocalHR Backend API is up and running...');
 });
 
 // Start Server
