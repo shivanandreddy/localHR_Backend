@@ -179,3 +179,73 @@ export const loginEmployee = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// Get profile of the currently logged-in employee
+export const getProfile = async (req, res) => {
+  try {
+    // Assuming your auth middleware populates req.user with the decoded token payload
+    const employeeId = req.user?.id || req.employeeId;
+
+    const employee = await Employee.findById(employeeId).select('-password');
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee profile not found.' });
+    }
+
+    res.status(200).json({
+      success: true,
+      employee
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Update profile of the currently logged-in employee
+export const updateProfile = async (req, res) => {
+  try {
+    const employeeId = req.user?.id || req.employeeId;
+    const { name, email, shiftStart, shiftEnd, password } = req.body;
+
+    const employee = await Employee.findById(employeeId);
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee not found.' });
+    }
+
+    // Check if email is being changed and if it already exists for another user
+    if (email && email !== employee.email) {
+      const existingEmail = await Employee.findOne({ email });
+      if (existingEmail) {
+        return res.status(400).json({ success: false, message: 'Email is already in use by another account.' });
+      }
+      employee.email = email;
+    }
+
+    // Update basic fields if provided
+    if (name) employee.name = name;
+    if (shiftStart) employee.shiftStart = shiftStart;
+    if (shiftEnd) employee.shiftEnd = shiftEnd;
+
+    // Handle password update securely if provided
+    if (password) {
+      if (password.length < 6) {
+        return res.status(400).json({ success: false, message: 'Password must be at least 6 characters long.' });
+      }
+      const salt = await bcrypt.genSalt(10);
+      employee.password = await bcrypt.hash(password, salt);
+    }
+
+    await employee.save();
+
+    // Exclude password from the response
+    const employeeObj = employee.toObject();
+    delete employeeObj.password;
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully!',
+      employee: employeeObj
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};

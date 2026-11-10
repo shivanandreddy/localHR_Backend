@@ -356,14 +356,113 @@ export const autoPunchIn = async (req, res) => {
     res.status(200).json({ 
       success: true, 
       message: isLate 
-        ? `Welcome ${matchedEmployee.name}! Clocked in successfully (Late by ${lateMinutes}m).` 
-        : `Welcome ${matchedEmployee.name}! Clocked in successfully.`, 
+        ? `Welcome ${matchedEmployee.name}! Punched in successfully (Late by ${lateMinutes}m).` 
+        : `Welcome ${matchedEmployee.name}! Punched in successfully.`, 
       employee: matchedEmployee.name,
       attendance 
     });
 
   } catch (err) {
     console.error("Auto Punch-In Error:", err);
+    res.status(500).json({ success: false, message: "Server Error: " + err.message });
+  }
+};
+
+export const autoPunchOut = async (req, res) => {
+  try {
+    const { liveFaceDescriptor, userLat, userLng } = req.body;
+
+    if (!liveFaceDescriptor || !Array.isArray(liveFaceDescriptor)) {
+      return res.status(400).json({ message: 'Live face descriptor is required.' });
+    }
+
+    if (userLat === undefined || userLng === undefined) {
+      return res.status(400).json({ message: 'GPS location is required for geofencing.' });
+    }
+
+    const numLat = Number(userLat);
+    const numLng = Number(userLng);
+
+    // Fetch active employees with registered biometrics
+    const employees = await Employee.find({ isActive: true, faceDescriptor: { $exists: true, $not: { $size: 0 } } });
+
+    let matchedEmployee = null;
+    let lowestDistance = 1.0;
+    const FACE_MATCH_THRESHOLD = 0.6;
+
+    for (const emp of employees) {
+      const distance = calculateFaceDistance(emp.faceDescriptor, liveFaceDescriptor);
+      if (distance < lowestDistance) {
+        lowestDistance = distance;
+        matchedEmployee = emp;
+      }
+    }
+
+    if (!matchedEmployee || lowestDistance > FACE_MATCH_THRESHOLD) {
+      return res.status(403).json({ 
+        success: false, 
+        message: `Face Recognition Failed: No matching employee found (Best match score: ${lowestDistance.toFixed(2)}).` 
+      });
+    }
+
+    // Geofence Check
+    const empLat = matchedEmployee.latitude;
+    const empLng = matchedEmployee.longitude;
+    const allowedRadius = matchedEmployee.allowedRadiusMeters || 75;
+
+    if (empLat !== null && empLng !== null && empLat !== undefined && empLng !== undefined) {
+      const distance = calculateDistanceMeters(numLat, numLng, empLat, empLng);
+      if (distance > allowedRadius) {
+        return res.status(400).json({ 
+          success: false,
+          message: `GPS Geofence Violation for ${matchedEmployee.name}: You are ${Math.round(distance)}m outside work boundary.` 
+        });
+      }
+    }
+
+    // Find today's clock-in record
+    const todayStr = new Date().toISOString().split('T')[0];
+    const attendance = await Attendance.findOne({ employeeId: matchedEmployee._id, date: todayStr });
+
+    if (!attendance || !attendance.clockIn) {
+      return res.status(400).json({ message: `No active clock-in found for ${matchedEmployee.name} today.` });
+    }
+
+    if (attendance.clockOut) {
+      return res.status(400).json({ message: `${matchedEmployee.name} has already clocked out for today.` });
+    }
+
+    const now = new Date();
+    const [shiftEndHour, shiftEndMinute] = matchedEmployee.shiftEnd.split(':').map(Number);
+    const expectedOut = new Date(now);
+    expectedOut.setHours(shiftEndHour, shiftEndMinute, 0, 0);
+
+    let isEarlyGoing = false;
+    let earlyMinutes = 0;
+
+    if (now < expectedOut) {
+      isEarlyGoing = true;
+      earlyMinutes = Math.floor((expectedOut - now) / (1000 * 60));
+    }
+
+    attendance.clockOut = now;
+    attendance.isEarlyGoing = isEarlyGoing;
+    attendance.earlyMinutes = earlyMinutes;
+    attendance.userLat = numLat;
+    attendance.userLng = numLng;
+    await attendance.save();
+
+    res.status(200).json({
+      success: true,
+      message: isEarlyGoing 
+        ? `Goodbye ${matchedEmployee.name}! Punched out successfully. Note: Early exit by ${earlyMinutes}m.` 
+        : `Goodbye ${matchedEmployee.name}! Punched out successfully.`,
+      employee: matchedEmployee.name,
+      attendance
+    });
+
+  } catch (err) {
+    console.error("Auto Punch-Out Error:", err);
     res.status(500).json({ success: false, message: "Server Error: " + err.message });
   }
 };

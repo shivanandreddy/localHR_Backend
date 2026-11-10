@@ -1,5 +1,5 @@
 import express from 'express';
-import { clockIn, clockOut,autoPunchIn, getMyAttendance } from '../controllers/attendance.controller.js';
+import { clockIn, clockOut,autoPunchIn, getMyAttendance, autoPunchOut } from '../controllers/attendance.controller.js';
 import { protect } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
@@ -11,6 +11,7 @@ router.post('/clock-in', protect, clockIn);
 router.post('/clock-out', protect, clockOut);
 router.post('/clock-out', protect, clockOut);
 router.post('/auto-punch-in', autoPunchIn);
+router.post('/auto-punch-out', autoPunchOut);
 router.get('/:id',protect, getMyAttendance);
 
 
