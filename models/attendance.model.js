@@ -48,12 +48,34 @@ const attendanceSchema = new mongoose.Schema({
   userLng: { 
     type: Number, 
     default: null 
+  },
+  
+  // --- Updated Exception Requests ---
+  exceptionRequest: {
+    requestType: { 
+      type: String, 
+      enum: ['Late Arrival', 'Early Departure', 'Half-Day', 'Leave'], 
+      default: null 
+    },
+    reason: { 
+      type: String, 
+      default: '' 
+    },
+    status: { 
+      type: String, 
+      enum: ['None', 'Pending', 'Approved', 'Rejected'], 
+      default: 'None' 
+    },
+    adminComment: { 
+      type: String, 
+      default: '' 
+    }
   }
 }, { 
   timestamps: true 
 });
 
-// Ensure an employee can only have one attendance document per date
+// Ensure an employee can only have one attendance document per date[cite: 7]
 attendanceSchema.index({ employeeId: 1, date: 1 }, { unique: true });
 
 const Attendance = mongoose.model('Attendance', attendanceSchema);

@@ -3,245 +3,7 @@ import Employee from '../models/employee.model.js';
 import { calculateDistanceMeters } from '../utils/haversine.js';
 import { calculateFaceDistance } from '../utils/faceMatcher.js';
 
-export const clockIn = async (req, res) => {
-  try {
-    const { employeeId, liveFaceDescriptor, userLat, userLng } = req.body;
 
-    // Validate required fields including face descriptor and GPS coordinates
-    if (!employeeId || employeeId === 'undefined' || employeeId === 'null' || !liveFaceDescriptor) {
-      return res.status(400).json({ 
-        message: 'Invalid session or missing required fields: employeeId or liveFaceDescriptor.' 
-      });
-    }
-
-    if (userLat === undefined || userLng === undefined || userLat === null || userLng === null) {
-      return res.status(400).json({ 
-        message: 'GPS location is required. Please enable location services to clock in.' 
-      });
-    }
-
-    // Ensure latitude and longitude are numbers
-    const numLat = Number(userLat);
-    const numLng = Number(userLng);
-
-    const employee = await Employee.findById(employeeId);
-    if (!employee) {
-      return res.status(404).json({ message: 'Employee not found.' });
-    }
-
-    if (!employee.isActive) {
-      return res.status(403).json({ message: 'Employee account is inactive.' });
-    }
-
-    // 1. SECURITY LAYER 1: Facial Recognition Verification
-    if (!employee.faceDescriptor || employee.faceDescriptor.length === 0) {
-      return res.status(400).json({ message: 'Facial profile not registered for this employee. Please register your face first.' });
-    }
-
-    const faceDistance = calculateFaceDistance(employee.faceDescriptor, liveFaceDescriptor);
-    const FACE_MATCH_THRESHOLD = 0.6; // Standard threshold for face-api / embeddings
-
-    if (faceDistance > FACE_MATCH_THRESHOLD) {
-      return res.status(403).json({ 
-        success: false,
-        message: `Face Recognition Failed: Biometric mismatch detected (Score: ${faceDistance.toFixed(2)}).` 
-      });
-    }
-
-    // 2. SECURITY LAYER 2: Employee-Specific GPS Geofence Verification
-    const empLat = employee.latitude;
-    const empLng = employee.longitude;
-    const allowedRadius = employee.allowedRadiusMeters || 75;
-
-    if (empLat !== null && empLng !== null && empLat !== undefined && empLng !== undefined) {
-      const distance = calculateDistanceMeters(numLat, numLng, empLat, empLng);
-      if (distance > allowedRadius) {
-        return res.status(400).json({ 
-          success: false,
-          message: `GPS Geofence Violation: You are approximately ${Math.round(distance)}m away from your designated work location (Allowed radius: ${allowedRadius}m).` 
-        });
-      }
-    }
-
-    // 3. Check if already clocked in today
-    const todayStr = new Date().toISOString().split('T')[0];
-    let attendance = await Attendance.findOne({ employeeId: employee._id, date: todayStr });
-    
-    if (attendance && attendance.clockIn) {
-      return res.status(400).json({ message: 'Already clocked in for today.' });
-    }
-
-    // 4. Evaluate Late Coming against Shift Start
-    const now = new Date();
-    const [shiftHour, shiftMinute] = employee.shiftStart.split(':').map(Number);
-    
-    const expectedIn = new Date(now);
-    expectedIn.setHours(shiftHour, shiftMinute, 0, 0);
-
-    let isLate = false;
-    let lateMinutes = 0;
-    const gracePeriodMins = 15;
-
-    if (now > expectedIn) {
-      const diffMs = now - expectedIn;
-      const diffMins = Math.floor(diffMs / (1000 * 60));
-      
-      if (diffMins > gracePeriodMins) {
-        isLate = true;
-        lateMinutes = diffMins;
-      }
-    }
-
-    // 5. Create or Update Attendance Record with userLat and userLng
-    const deviceIdUsed = req.body.clientDeviceId || 'gps-verified-device';
-
-    if (attendance) {
-      attendance.clockIn = now;
-      attendance.isLate = isLate;
-      attendance.lateMinutes = lateMinutes;
-      attendance.deviceIdUsed = deviceIdUsed;
-      attendance.userLat = numLat;
-      attendance.userLng = numLng;
-      await attendance.save();
-    } else {
-      attendance = await Attendance.create({
-        employeeId: employee._id,
-        date: todayStr,
-        clockIn: now,
-        isLate,
-        lateMinutes,
-        deviceIdUsed,
-        userLat: numLat,
-        userLng: numLng,
-        status: 'Present'
-      });
-    }
-
-    res.status(200).json({ 
-      success: true, 
-      message: isLate 
-        ? `GPS & Face Verified! Clocked in successfully. Note: You are late by ${lateMinutes} minutes.` 
-        : 'GPS & Face Verified! Clocked in successfully.', 
-      attendance 
-    });
-
-  } catch (err) {
-    console.error("Attendance Error Stack:", err);
-    res.status(500).json({ 
-      success: false, 
-      message: "Server Error: " + err.message, 
-      stack: err.stack 
-    });
-  }
-};
-
-export const clockOut = async (req, res) => {
-  try {
-    const { employeeId, liveFaceDescriptor, userLat, userLng } = req.body;
-
-    // Validate required fields
-    if (!employeeId || employeeId === 'undefined' || employeeId === 'null' || !liveFaceDescriptor) {
-      return res.status(400).json({ 
-        message: 'Invalid session or missing required fields: employeeId or liveFaceDescriptor.' 
-      });
-    }
-
-    if (userLat === undefined || userLng === undefined || userLat === null || userLng === null) {
-      return res.status(400).json({ 
-        message: 'GPS location is required for clock-out verification.' 
-      });
-    }
-
-    const numLat = Number(userLat);
-    const numLng = Number(userLng);
-
-    const employee = await Employee.findById(employeeId);
-    if (!employee) {
-      return res.status(404).json({ message: 'Employee not found.' });
-    }
-
-    // 1. SECURITY LAYER 1: Facial Recognition Verification
-    if (!employee.faceDescriptor || employee.faceDescriptor.length === 0) {
-      return res.status(400).json({ message: 'Facial profile not registered for this employee.' });
-    }
-
-    const faceDistance = calculateFaceDistance(employee.faceDescriptor, liveFaceDescriptor);
-    const FACE_MATCH_THRESHOLD = 0.6;
-
-    if (faceDistance > FACE_MATCH_THRESHOLD) {
-      return res.status(403).json({ 
-        success: false,
-        message: `Face Recognition Failed on Clock-Out: Biometric mismatch detected (Score: ${faceDistance.toFixed(2)}).` 
-      });
-    }
-
-    // 2. SECURITY LAYER 2: Employee-Specific GPS Geofence Verification
-    const empLat = employee.latitude;
-    const empLng = employee.longitude;
-    const allowedRadius = employee.allowedRadiusMeters || 75;
-
-    if (empLat !== null && empLng !== null && empLat !== undefined && empLng !== undefined) {
-      const distance = calculateDistanceMeters(numLat, numLng, empLat, empLng);
-      if (distance > allowedRadius) {
-        return res.status(400).json({ 
-          success: false,
-          message: `GPS Geofence Violation on Clock-Out: You are outside the allowed work radius (${Math.round(distance)}m away).` 
-        });
-      }
-    }
-
-    // Find today's attendance record
-    const todayStr = new Date().toISOString().split('T')[0];
-    const attendance = await Attendance.findOne({ employeeId, date: todayStr });
-
-    if (!attendance || !attendance.clockIn) {
-      return res.status(400).json({ message: 'No active clock-in found for today.' });
-    }
-
-    if (attendance.clockOut) {
-      return res.status(400).json({ message: 'Already clocked out for today.' });
-    }
-
-    const now = new Date();
-
-    const [shiftEndHour, shiftEndMinute] = employee.shiftEnd.split(':').map(Number);
-    const expectedOut = new Date(now);
-    expectedOut.setHours(shiftEndHour, shiftEndMinute, 0, 0);
-
-    let isEarlyGoing = false;
-    let earlyMinutes = 0;
-
-    if (now < expectedOut) {
-      const diffMs = expectedOut - now;
-      const diffMins = Math.floor(diffMs / (1000 * 60));
-      isEarlyGoing = true;
-      earlyMinutes = diffMins;
-    }
-
-    attendance.clockOut = now;
-    attendance.isEarlyGoing = isEarlyGoing;
-    attendance.earlyMinutes = earlyMinutes;
-    attendance.userLat = numLat;
-    attendance.userLng = numLng;
-    await attendance.save();
-
-    res.status(200).json({
-      success: true,
-      message: isEarlyGoing 
-        ? `GPS & Face Verified! Clocked out successfully. Note: You left early by ${earlyMinutes} minutes.` 
-        : 'GPS & Face Verified! Clocked out successfully.',
-      attendance
-    });
-
-  } catch (err) {
-    console.error("Attendance Error Stack:", err);
-    res.status(500).json({ 
-      success: false, 
-      message: "Server Error: " + err.message, 
-      stack: err.stack 
-    });
-  }
-};
 
 export const getMyAttendance = async (req, res) => {
   try {
@@ -464,5 +226,107 @@ export const autoPunchOut = async (req, res) => {
   } catch (err) {
     console.error("Auto Punch-Out Error:", err);
     res.status(500).json({ success: false, message: "Server Error: " + err.message });
+  }
+};
+
+export const submitAttendanceRequest = async (req, res) => {
+  try {
+    const employeeId = req.user?.id || req.user?._id; // Extracted from your auth middleware
+    const { date, requestType, reason } = req.body;
+
+    if (!date || !requestType || !reason) {
+      return res.status(400).json({ message: 'Date, request type, and reason are required.' });
+    }
+
+    // Find or create the attendance document for this date
+    let attendance = await Attendance.findOne({ employeeId, date });
+
+    if (!attendance) {
+      // If no attendance doc exists yet for today (e.g. applying for leave in advance)
+      attendance = new Attendance({
+        employeeId,
+        date,
+        status: requestType === 'Leave' ? 'On-Leave' : 'Present',
+      });
+    }
+
+    // Attach/Update the exception request
+    attendance.exceptionRequest = {
+      requestType,
+      reason,
+      status: 'Pending',
+      adminComment: '',
+    };
+
+    await attendance.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Attendance exception request submitted successfully.', 
+      attendance 
+    });
+  } catch (err) {
+    console.error('Submit Request Error:', err);
+    res.status(500).json({ message: 'Server error while submitting request.' });
+  }
+};
+
+
+export const reviewAttendanceRequest = async (req, res) => {
+  try {
+    const { attendanceId } = req.params;
+    const { status, adminComment } = req.body; // status: 'Approved' or 'Rejected'
+
+    if (!['Approved', 'Rejected'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status update. Must be Approved or Rejected.' });
+    }
+
+    const attendance = await Attendance.findById(attendanceId);
+    if (!attendance) {
+      return res.status(404).json({ message: 'Attendance record not found.' });
+    }
+
+    attendance.exceptionRequest.status = status;
+    attendance.exceptionRequest.adminComment = adminComment || '';
+
+    // Optional: If leave/half-day is approved, update main attendance status accordingly
+    if (status === 'Approved') {
+      if (attendance.exceptionRequest.requestType === 'Leave') {
+        attendance.status = 'On-Leave';
+      } else if (attendance.exceptionRequest.requestType === 'Half-Day') {
+        attendance.status = 'Half-Day';
+      }
+    }
+
+    await attendance.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: `Request successfully ${status.toLowerCase()}.`, 
+      attendance 
+    });
+  } catch (err) {
+    console.error('Review Request Error:', err);
+    res.status(500).json({ message: 'Server error while reviewing request.' });
+  }
+};
+
+export const getAdminAttendanceRequests = async (req, res) => {
+  try {
+    // Find documents where the exceptionRequest requestType exists and is not null
+    const requests = await Attendance.find({
+      'exceptionRequest.requestType': { $exists: true, $ne: null }
+    })
+      .populate('employeeId', 'name email employeeId department')
+      .sort({ updatedAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: requests.length,
+      requests,
+    });
+  } catch (err) {
+    console.error('Fetch Admin Requests Error:', err);
+    res.status(500).json({ message: 'Server error while fetching requests.' });
   }
 };
